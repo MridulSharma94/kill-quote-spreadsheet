@@ -63,6 +63,9 @@ def normalize_quote(quote: Quote, line: pd.Series, terms: VendorTerms, fx_inr_pe
         base=price/1000.0
     elif unit in ("INR/KG","INR PER KG","PER KG"):
         base=price*weight
+    elif unit in ("SAME_AS_LAST_YEAR", "INR/BOX (LAST YEAR)"):
+        # Extractor may use this only when vendor explicitly references last year's rate.
+        base=price
     else:
         return {"vendor_id":quote.vendor_id,"line_id":quote.line_id,"quoted":True,
                 "net_inr_per_box":None,"freight_inr_per_box":None,"landed_pre_gst_inr_per_box":None,

@@ -3,8 +3,7 @@ import os, json, sqlite3
 from pathlib import Path
 import pandas as pd
 import streamlit as st
-from normalize.core import normalize_quotes, build_award, landed_cost
-from extract.pipeline import extract_vendor_files
+from extract.integration import run_full_pipeline
 
 ROOT = Path(__file__).parent
 st.set_page_config(page_title="Kill the Quote Spreadsheet", layout="wide")
@@ -24,8 +23,10 @@ def load_demo():
 
 if st.button("Run extraction + normalization", type="primary"):
     with st.spinner("Reading vendor responses and normalizing commercial terms..."):
-        df, assumptions, evidence = extract_vendor_files(lines, last_year, ROOT/"vendor_files", fx, gst_rate/100)
+        raw, df, raw_terms, assumptions, evidence = run_full_pipeline(lines, last_year, ROOT/"vendor_files", fx)
+        raw.to_csv(ROOT/"data/raw_extractions.csv", index=False)
         df.to_csv(ROOT/"data/normalized_quotes.csv", index=False)
+        (ROOT/"data/vendor_terms.json").write_text(json.dumps(raw_terms, indent=2))
         (ROOT/"data/assumptions.json").write_text(json.dumps(assumptions, indent=2))
         (ROOT/"data/evidence.json").write_text(json.dumps(evidence, indent=2))
         st.session_state["quotes"] = df

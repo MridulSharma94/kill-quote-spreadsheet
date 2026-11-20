@@ -1,0 +1,31 @@
+line_id,item_name,style,ply,length_mm,width_mm,height_mm,spec,weight_kg_per_box,qty,uom
+L01,RSC Carton 600x400x400,RSC,5,600,400,400,"5-ply, 180 GSM kraft, BF 22",1.066,48000,pcs
+L02,RSC Carton 500x350x350,RSC,5,500,350,350,"5-ply, 180 GSM kraft, BF 22",0.796,72000,pcs
+L03,RSC Carton 450x300x300,RSC,5,450,300,300,"5-ply, 180 GSM kraft, BF 22",0.605,100000,pcs
+L04,RSC Carton 400x300x250,RSC,5,400,300,250,"5-ply, 180 GSM kraft, BF 22",0.518,120000,pcs
+L05,RSC Carton 350x250x200,RSC,5,350,250,200,"5-ply, 180 GSM kraft, BF 22",0.366,160000,pcs
+L06,RSC Carton 300x200x150,RSC,5,300,200,150,"5-ply, 180 GSM kraft, BF 22",0.239,200000,pcs
+L07,RSC Carton 550x380x320 Heavy Duty,RSC,5,550,380,320,"5-ply, 180 GSM kraft, BF 22, heavy duty BF 28",0.869,32000,pcs
+L08,RSC Carton 650x450x450,RSC,5,650,450,450,"5-ply, 180 GSM kraft, BF 22",1.316,24000,pcs
+L09,RSC Carton 480x320x280,RSC,5,480,320,280,"5-ply, 180 GSM kraft, BF 22",0.643,56000,pcs
+L10,RSC Carton 420x280x220,RSC,5,420,280,220,"5-ply, 180 GSM kraft, BF 22",0.471,88000,pcs
+L11,RSC Carton 300x200x150,RSC,3,300,200,150,"3-ply, 150 GSM kraft, BF 18",0.14,240000,pcs
+L12,RSC Carton 250x180x120,RSC,3,250,180,120,"3-ply, 150 GSM kraft, BF 18",0.104,280000,pcs
+L13,RSC Carton 350x250x200,RSC,3,350,250,200,"3-ply, 150 GSM kraft, BF 18",0.214,140000,pcs
+L14,RSC Carton 400x300x200,RSC,3,400,300,200,"3-ply, 150 GSM kraft, BF 18",0.276,112000,pcs
+L15,RSC Carton 200x150x100,RSC,3,200,150,100,"3-ply, 150 GSM kraft, BF 18",0.071,320000,pcs
+L16,RSC Carton 320x220x180,RSC,3,320,220,180,"3-ply, 150 GSM kraft, BF 18",0.172,180000,pcs
+L17,RSC Carton 280x200x160,RSC,3,280,200,160,"3-ply, 150 GSM kraft, BF 18",0.138,208000,pcs
+L18,RSC Carton 380x260x220,RSC,3,380,260,220,"3-ply, 150 GSM kraft, BF 18",0.243,80000,pcs
+L19,Export RSC 700x500x500,RSC,7,700,500,500,"7-ply, 200 GSM kraft, BF 25",2.328,12000,pcs
+L20,Export RSC 600x450x450,RSC,7,600,450,450,"7-ply, 200 GSM kraft, BF 25",1.838,18000,pcs
+L21,Export RSC 800x600x600,RSC,7,800,600,600,"7-ply, 200 GSM kraft, BF 25",3.249,6000,pcs
+L22,Export RSC 650x400x400,RSC,7,650,400,400,"7-ply, 200 GSM kraft, BF 25",1.634,14000,pcs
+L23,Die-cut Mailer Box 320x240x80,DIECUT,5,320,240,80,"5-ply, 180 GSM kraft, BF 22",0.143,100000,pcs
+L24,Die-cut Mailer Box 280x200x60,DIECUT,3,280,200,60,"3-ply, 150 GSM kraft, BF 18",0.057,160000,pcs
+L25,Die-cut Tray with Lid 400x300x100,DIECUT,5,400,300,100,"5-ply, 180 GSM kraft, BF 22",0.217,40000,pcs
+L26,Partition Set 12-cell 380x280,PARTITION,3,380,280,0,"3-ply, 150 GSM kraft, BF 18",0.061,80000,pcs
+L27,Corrugated Pad 600x400,PAD,5,600,400,0,"5-ply, 180 GSM kraft, BF 22",0.156,200000,pcs
+L28,Printed RSC 2-colour 450x300x300,RSC,5,450,300,300,"5-ply, 180 GSM kraft, BF 22, 2-colour flexo print",0.605,40000,pcs
+L29,Printed RSC 3-colour 500x350x350,RSC,5,500,350,350,"5-ply, 180 GSM kraft, BF 22, 3-colour flexo print",0.796,32000,pcs
+L30,Die-cut Retail Display Tray 450x300x120,DIECUT,5,450,300,120,"5-ply, 180 GSM kraft, BF 22",0.267,20000,pcs

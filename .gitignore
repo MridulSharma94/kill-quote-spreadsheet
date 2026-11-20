@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+data/normalized_quotes.csv
+data/assumptions.json
+data/evidence.json
+data/award_export.xlsx
+outbox/
+cache/

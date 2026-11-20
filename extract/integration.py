@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import pandas as pd
 from normalize.core import Quote, VendorTerms, normalize_all
+from quality.specs import validate_quote_specs
 
 def _float_or_none(x):
     try:
@@ -73,11 +74,22 @@ def run_full_pipeline(lines,last_year,vendor_dir,fx_inr_per_usd=88.0):
         ))
     quotes=raw_frame_to_quotes(raw)
     normalized=normalize_all(lines,quotes,terms,fx_inr_per_usd)
-    normalized = normalized.merge(
-    lines[["line_id", "item_name"]],
-    on="line_id",
-    how="left"
-    )
+    # Preserve source-level clarification notes separately from supplier no-bids.
+    note_map={(str(r.vendor_id),str(r.line_id)):str(r.get("extraction_note", "") or "")
+              for _,r in raw.iterrows()}
+    normalized["extraction_note"]=[note_map.get((str(v),str(l)), "")
+                                   for v,l in zip(normalized.vendor_id,normalized.line_id)]
+    for idx,row in normalized.iterrows():
+        note=str(row.get("extraction_note", "") or "")
+        if note and not bool(row.get("quoted", False)) and "No extracted quote" not in note:
+            normalized.at[idx,"status"]="needs_review"
+            reasons=row.get("reasons", [])
+            if not isinstance(reasons,list): reasons=[str(reasons)] if str(reasons).strip() else []
+            reasons.append(note)
+            normalized.at[idx,"reasons"]=reasons
+    # Add canonical item context, then compare disclosed vendor specifications.
+    normalized=normalized.merge(lines[["line_id","item_name"]],on="line_id",how="left")
+    normalized=validate_quote_specs(normalized,raw,lines)
     # Attach useful commercial metadata and reasons.
     normalized["payment_terms"]=normalized.vendor_id.map({k:v.payment_terms for k,v in terms.items()})
     normalized["validity_days"]=normalized.vendor_id.map({k:v.validity_days for k,v in terms.items()})

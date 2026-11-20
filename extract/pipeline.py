@@ -1,9 +1,12 @@
 """LLM extraction adapters. No ground-truth imports are permitted here."""
 from __future__ import annotations
+from dotenv import load_dotenv
+load_dotenv()
 import os, json, re, base64
 from pathlib import Path
 import pandas as pd
 from openai import OpenAI
+from extract.structured import parse_v1_xlsx, parse_v2_pdf_text, parse_v5_email
 
 VENDOR_FILES = {
  "V1":"Shree_Ganesh_V1.xlsx",
@@ -83,34 +86,154 @@ Supplemental vendor terms:
     else:
         messages=[{"role":"user","content":prompt}]
         selected=model
-    response=_client().chat.completions.create(
-        model=selected,
-        messages=messages,
-        response_format={"type":"json_object"},
-        temperature=0
-    )
-    raw=response.choices[0].message.content
-    try: return json.loads(raw)
-    except json.JSONDecodeError as e: raise ValueError(f"{vendor_id}: model returned invalid JSON: {e}; response={raw[:500]}")
+    
+    # Vision requests have a tighter output budget. Text extraction can return
+    # all 30 line items, so give it a larger budget.
+    output_limit = 600 if path.suffix.lower() in (".jpg", ".jpeg", ".png") else 1800
+
+    client = _client()
+    request = {
+        "model": selected,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": output_limit,
+    }
+
+    try:
+        response = client.chat.completions.create(
+            **request,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        error_text = str(exc).lower()
+
+        # Retry without provider-enforced JSON mode only when the provider
+        # rejects JSON validation/structured output.
+        json_mode_error = (
+            "failed to validate json" in error_text
+            or "failed_generation" in error_text
+            or "response_format" in error_text
+        )
+
+        if not json_mode_error:
+            raise
+
+        fallback_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Return exactly one valid JSON object. "
+                    "Do not use Markdown fences or add commentary. "
+                    "Use the requested keys and data types. "
+                    "Represent unknown numeric values as null."
+                ),
+            },
+            *messages,
+        ]
+
+        response = client.chat.completions.create(
+            **{**request, "messages": fallback_messages}
+        )
+
+    raw = response.choices[0].message.content or ""
+
+    # Some models wrap JSON in Markdown fences despite the instructions.
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1]
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{vendor_id}: model returned invalid JSON. "
+            f"Error: {exc}. Response excerpt: {raw[:500]}"
+        ) from exc
+
+    if not isinstance(result, dict):
+        raise ValueError(f"{vendor_id}: extraction response was not a JSON object.")
+
+    if not isinstance(result.get("quotes", []), list):
+        raise ValueError(f"{vendor_id}: JSON field 'quotes' must be an array.")
+
+    return result
+
+def _call_image_in_chunks(vendor_id, path, lines, last_year, model):
+    """Run vision extraction over overlapping, enhanced horizontal crops.
+
+    The rate card is a tall image. Smaller overlapping crops reduce missed rows
+    while preserving the original source file as the evidence reference.
+    """
+    from PIL import Image, ImageEnhance, ImageOps
+    import tempfile
+    image = Image.open(path).convert("RGB")
+    width, height = image.size
+    spans = [
+    (int(height * 0.00), int(height * 0.20)),
+    (int(height * 0.16), int(height * 0.36)),
+    (int(height * 0.32), int(height * 0.52)),
+    (int(height * 0.48), int(height * 0.68)),
+    (int(height * 0.64), int(height * 0.84)),
+    (int(height * 0.80), height),
+    ]
+    merged = {}
+    terms = {}
+    for start, end in spans:
+        crop = image.crop((0, start, width, end))
+        crop = ImageOps.autocontrast(crop)
+        crop = ImageEnhance.Sharpness(crop).enhance(1.4)
+        crop = crop.resize((int(crop.width * 1.5), int(crop.height * 1.5)))
+        with tempfile.NamedTemporaryFile(suffix=".jpg", dir=path.parent) as tmp:
+            crop.save(tmp.name, quality=95)
+            result = _call_model(vendor_id, Path(tmp.name), lines, last_year,
+                                 "Image crop of the supplier rate card. Extract only line items visible in this crop; do not infer rows outside it.", model)
+        if not terms:
+            terms = result.get("commercial_terms", {})
+        for q in result.get("quotes", []):
+            lid = str(q.get("line_id", "")).strip().upper()
+            if not lid:
+                continue
+            prior = merged.get(lid)
+            if prior is None or float(q.get("confidence", 0) or 0) > float(prior.get("confidence", 0) or 0):
+                merged[lid] = q
+    return {"vendor_id": vendor_id, "commercial_terms": terms, "quotes": list(merged.values())}
+
 
 def extract_vendor_files(lines,last_year,vendor_dir,fx,gst):
-    """Extract raw facts; normalization is a separate deterministic step."""
+    """Extract source facts; deterministic parsers override LLM guesses where possible."""
     vendor_dir=Path(vendor_dir)
     model=os.getenv("OPENAI_MODEL","openai/gpt-oss-120b")
     all_quotes=[]; terms_by_vendor={}; evidence=[]; assumptions=[]
+    held_by_vendor={}
     for vid,filename in VENDOR_FILES.items():
         path=vendor_dir/filename
         if not path.exists():
             assumptions.append({"vendor_id":vid,"assumption":f"Missing source file: {filename}"})
             continue
         text=_read_text(path)
-        result=_call_model(vid,path,lines,last_year,text,model)
+        if path.suffix.lower() in (".jpg", ".jpeg", ".png"):
+            result=_call_image_in_chunks(vid,path,lines,last_year,model)
+        else:
+            result=_call_model(vid,path,lines,last_year,text,model)
         t=result.get("commercial_terms",{})
         terms_by_vendor[vid]=t
         assumptions.append({"vendor_id":vid,"assumption":"Commercial terms extracted from source; verify terms_evidence before award.",
                             "terms_evidence":t.get("terms_evidence",""),"terms_confidence":t.get("terms_confidence",0)})
+        model_quotes=result.get("quotes",[])
+        # Deterministic source parsers take precedence over LLM line-item extraction.
+        if vid == "V1":
+            model_quotes = parse_v1_xlsx(path)
+        elif vid == "V2":
+            parsed = parse_v2_pdf_text(text)
+            if parsed:
+                model_quotes = parsed
+        elif vid == "V5":
+            parsed, held_by_vendor[vid] = parse_v5_email(text, lines, last_year)
+            model_quotes = parsed
         seen=set()
-        for q in result.get("quotes",[]):
+        for q in model_quotes:
             lid=str(q.get("line_id","")).strip().upper()
             if lid not in set(lines.line_id): continue
             if lid in seen:
@@ -118,24 +241,27 @@ def extract_vendor_files(lines,last_year,vendor_dir,fx,gst):
                 continue
             seen.add(lid)
             rec={"vendor_id":vid,"line_id":lid,"quoted":True,
-                 "quoted_price_as_stated":q.get("quoted_price"),"quoted_unit":q.get("unit"),
+                 "quoted_price_as_stated":q.get("quoted_price",q.get("price")),"quoted_unit":q.get("unit"),
                  "currency":q.get("currency",t.get("currency","INR")),
                  "confidence":float(q.get("confidence",0)),
                  "source_file":filename,"source_snippet":q.get("source_snippet",""),
                  "spec_deviation":q.get("spec_deviation",""),
-                 "assumptions":"; ".join(q.get("assumptions",[]))}
+                 "assumptions":"; ".join(q.get("assumptions",[])) if isinstance(q.get("assumptions",[]),list) else str(q.get("assumptions", "")),
+                 "extraction_note":""}
             all_quotes.append(rec)
             evidence.append({"vendor_id":vid,"line_id":lid,"source_file":filename,
                              "source_snippet":rec["source_snippet"],"confidence":rec["confidence"]})
-    # Keep missing rows explicit. No price is ever imputed here.
+    # Explicit matrix: a missing extraction is not silently converted to a no-bid.
     df=pd.DataFrame(all_quotes)
-    if df.empty:
-        df=pd.DataFrame(columns=["vendor_id","line_id","quoted","quoted_price_as_stated","quoted_unit","currency","confidence","source_file","source_snippet","spec_deviation","assumptions"])
-    existing=set(zip(df.vendor_id,df.line_id))
+    columns=["vendor_id","line_id","quoted","quoted_price_as_stated","quoted_unit","currency","confidence","source_file","source_snippet","spec_deviation","assumptions","extraction_note"]
+    if df.empty: df=pd.DataFrame(columns=columns)
     for vid in VENDOR_FILES:
-        for lid in lines.line_id:
-            if (vid,lid) not in existing:
-                df.loc[len(df)]={"vendor_id":vid,"line_id":lid,"quoted":False,"quoted_price_as_stated":None,
-                    "quoted_unit":None,"currency":None,"confidence":0,"source_file":VENDOR_FILES[vid],
-                    "source_snippet":"","spec_deviation":"","assumptions":"No extracted quote; verify source before treating as no_quote."}
+        existing=set(df.loc[df.vendor_id.eq(vid),"line_id"].astype(str)) if not df.empty else set()
+        for lid in lines.line_id.astype(str):
+            if lid in existing: continue
+            note=held_by_vendor.get(vid,{}).get(lid, "")
+            df.loc[len(df)]={"vendor_id":vid,"line_id":lid,"quoted":False,"quoted_price_as_stated":None,
+                "quoted_unit":None,"currency":None,"confidence":0,"source_file":VENDOR_FILES[vid],
+                "source_snippet":"","spec_deviation":"","assumptions":"",
+                "extraction_note":note or "No extracted quote; inspect original source before classifying as supplier no-bid."}
     return df,terms_by_vendor,assumptions,evidence

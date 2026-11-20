@@ -9,3 +9,6 @@ data/evidence.json
 data/award_export.xlsx
 outbox/
 cache/
+
+data/raw_extractions.csv
+data/vendor_terms.json

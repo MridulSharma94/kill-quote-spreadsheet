@@ -17,9 +17,60 @@ fx = st.sidebar.number_input("USD → INR", min_value=1.0, value=88.0, step=0.5)
 fx_date = st.sidebar.text_input("FX rate date", value="2026-11-20")
 st.sidebar.caption("Tax and FX are buyer-configurable assumptions. Confirm applicability before award.")
 
-@st.cache_data(show_spinner=False)
-def load_demo():
-    return normalize_quotes(lines, last_year, ROOT/"vendor_files", fx, gst_rate/100)
+
+def build_award(quotes, lines, eligible_vendors):
+    required = {
+        "vendor_id", "line_id", "status", "quoted",
+        "net_inr_per_box", "spec_deviation"
+    }
+    missing = required - set(quotes.columns)
+    if missing:
+        raise ValueError(f"Missing award columns: {sorted(missing)}")
+
+    eligible = quotes[
+        quotes["vendor_id"].isin(eligible_vendors)
+        & quotes["status"].eq("accepted")
+        & quotes["quoted"].eq(True)
+        & quotes["net_inr_per_box"].notna()
+        & quotes["spec_deviation"].fillna("").astype(str).str.strip().eq("")
+    ].copy()
+
+    if "freight_treatment" in eligible.columns:
+        eligible = eligible[
+            ~eligible["freight_treatment"].isin(
+                ["extra_unknown", "unknown"]
+            )
+        ]
+
+    price_col = "net_inr_per_box"
+    if "landed_pre_gst_inr_per_box" in eligible.columns:
+        eligible["landed_pre_gst_inr_per_box"] = pd.to_numeric(
+            eligible["landed_pre_gst_inr_per_box"], errors="coerce"
+        )
+        eligible = eligible[
+            eligible["landed_pre_gst_inr_per_box"].notna()
+        ]
+        price_col = "landed_pre_gst_inr_per_box"
+
+    if eligible.empty:
+        return pd.DataFrame()
+
+    eligible = eligible.sort_values(price_col)
+    winners = eligible.drop_duplicates(subset=["line_id"], keep="first")
+
+    award = winners.merge(
+        lines[["line_id", "qty"]],
+        on="line_id",
+        how="left",
+        validate="one_to_one"
+    )
+
+    award["selected_inr_per_box"] = award[price_col]
+    award["extended_value"] = (
+        award["selected_inr_per_box"] * award["qty"]
+    )
+
+    return award
 
 if st.button("Run extraction + normalization", type="primary"):
     with st.spinner("Reading vendor responses and normalizing commercial terms..."):
@@ -48,7 +99,7 @@ with tabs[0]:
     st.subheader("Normalized comparison · INR per box · ex-GST, ex-freight")
     pivot = quotes.pivot_table(index=["line_id","item_name"], columns="vendor_id", values="net_inr_per_box", aggfunc="first")
     status = quotes.pivot_table(index=["line_id","item_name"], columns="vendor_id", values="status", aggfunc="first")
-    st.dataframe(pivot.style.format("₹{:,.2f}").highlight_null("lightgray"), use_container_width=True)
+    st.dataframe(pivot.style.format("₹{:,.2f}").highlight_null("lightgray"), width='stretch')
     st.caption("Grey/blank cells are not quotes. They are never treated as zero.")
     chosen = st.selectbox("Inspect a quote cell", quotes.apply(lambda r: f'{r.line_id} · {r.vendor_id}', axis=1).tolist())
     row = quotes.loc[quotes.apply(lambda r: f'{r.line_id} · {r.vendor_id}' == chosen, axis=1)].iloc[0]
@@ -61,14 +112,14 @@ with tabs[1]:
         with st.expander(f'{r.vendor_id} · {r.line_id} · confidence {r.confidence}'):
             st.write(r.get("source_snippet",""))
             edited = st.number_input("Confirmed INR / box (ex-GST, ex-freight)", min_value=0.0, value=float(r.net_inr_per_box or 0), key=f"edit_{idx}")
-            if st.button("Confirm price", key=f"confirm_{idx}"):
+            if st.button("Save reviewed price", key=f"confirm_{idx}"):
                 quotes.loc[idx,"net_inr_per_box"] = edited
                 quotes.loc[idx,"status"] = "accepted"
                 st.session_state["quotes"] = quotes
                 quotes.to_csv(ROOT/"data/normalized_quotes.csv", index=False)
                 st.rerun()
     st.subheader("Assumptions ledger")
-    st.dataframe(pd.DataFrame(st.session_state["assumptions"]), use_container_width=True)
+    st.dataframe(pd.DataFrame(st.session_state["assumptions"]), width='stretch')
 with tabs[2]:
     st.subheader("Analyst")
     question = st.text_input("Ask about the comparison", placeholder="Which vendor is cheapest on a spec-compliant basis?")
@@ -95,9 +146,9 @@ with tabs[3]:
     eligible_vendors = [v for v,s in quality.items() if s>=min_quality]
     award = build_award(quotes, lines, eligible_vendors)
     st.write("Eligible vendors:", ", ".join(eligible_vendors) if eligible_vendors else "None")
-    st.dataframe(award, use_container_width=True)
+    st.dataframe(award, width='stretch')
     if not award.empty:
-        st.metric("Indicative award value (ex-GST/freight)", f"₹{award.extended_value.sum()/1e7:,.2f} crore")
+        st.metric("Indicative award value (pre-GST, incl. stated freight)", f"₹{award.extended_value.sum()/1e7:,.2f} crore")
     st.caption("Quality scores are illustrative demo inputs, not supplied questionnaire evidence. Replace them with verified responses before a real award.")
 with tabs[4]:
     st.subheader("Pre-award trust checks")
@@ -120,6 +171,7 @@ with tabs[5]:
     scope = st.text_area("Scope", "Supply of corrugated packaging for FMCG distribution.")
     terms = st.text_area("Commercial terms", "Quote per box; state GST, freight, MOQ, payment terms, validity and delivery lead time.")
     if st.button("Generate vendor RFx emails"):
+        (ROOT / "outbox").mkdir(exist_ok=True)
         for vendor in ["V1","V2","V3","V4","V5"]:
             (ROOT/"outbox"/f"{vendor}_RFx.txt").write_text(f"Subject: RFx – Corrugated Packaging\\n\\n{scope}\\n\\n{terms}\\n\\nPlease quote all 30 attached line items and disclose all deviations.")
         st.success("Five draft RFx emails written to outbox/. No email was sent.")

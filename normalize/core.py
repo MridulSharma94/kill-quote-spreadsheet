@@ -83,12 +83,25 @@ def normalize_quote(quote: Quote, line: pd.Series, terms: VendorTerms, fx_inr_pe
     base_after_discount=base*(1-terms.discount_pct/100)
     # Convert GST-inclusive vendor quote back to ex-GST using the rate that was in force
     # in the quote. Never silently substitute the buyer's current tax scenario.
-    if terms.gst_treatment=="inclusive":
+    if terms.gst_treatment == "inclusive":
         if terms.gst_rate_in_quote is None:
             reasons.append("GST-inclusive quote but quote-period GST rate is unknown.")
-            net=None
+            net = None
         else:
-            net=base_after_discount/(1+terms.gst_rate_in_quote)
+            gst_rate = _number(
+                terms.gst_rate_in_quote,
+                "gst_rate_in_quote"
+            )
+
+            # Accept either 12 (percentage) or 0.12 (decimal).
+            if gst_rate > 1:
+                gst_rate = gst_rate / 100.0
+
+            if not 0 <= gst_rate < 1:
+                reasons.append("Invalid GST rate in supplier quote.")
+                net = None
+            else:
+                net = base_after_discount / (1 + gst_rate)
     elif terms.gst_treatment=="extra":
         net=base_after_discount
     else:

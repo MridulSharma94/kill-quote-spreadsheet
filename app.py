@@ -15,7 +15,7 @@ lines = pd.read_csv(ROOT/"data/line_items.csv")
 last_year = pd.read_csv(ROOT/"data/last_year.csv")
 gst_rate = st.sidebar.number_input("GST rate (%)", min_value=0.0, max_value=28.0, value=5.0, step=0.5)
 fx = st.sidebar.number_input("USD → INR", min_value=1.0, value=92.6, step=0.5)
-fx_date = st.sidebar.text_input("FX rate date", value="2026-11-20")
+fx_date = st.sidebar.text_input("FX rate date", value="2026-11-21")
 st.sidebar.caption("Tax and FX are buyer-configurable assumptions. Confirm applicability before award.")
 
 
@@ -111,25 +111,103 @@ with tabs[1]:
 
     st.subheader("Assumptions ledger")
     st.dataframe(pd.DataFrame(st.session_state["assumptions"]), width="stretch")
+
 with tabs[2]:
     st.subheader("Analyst")
     question = st.text_input("Ask about the comparison", placeholder="Which vendor is cheapest on a spec-compliant basis?")
+
     if st.button("Analyze"):
         q = question.lower()
+        raw = st.session_state.get("raw", pd.DataFrame())
+
         if "coverage" in q or "missing" in q:
-            ans = quotes.groupby("vendor_id").quoted.sum().sort_values(ascending=False).to_frame("lines_quoted")
-            st.dataframe(ans)
+            states = quotes.copy()
+            if "quote_state" not in states.columns:
+                states["quote_state"] = "quoted"
+
+            coverage_rows = []
+            for vendor in sorted(quotes.vendor_id.unique()):
+                part = states[states.vendor_id.eq(vendor)]
+                coverage_rows.append({
+                    "vendor_id": vendor,
+                    "quoted": int((part.quote_state.eq("quoted") & part.quoted.fillna(False).astype(bool)).sum()),
+                    "supplier_no_quote": int(part.quote_state.eq("supplier_no_quote").sum()),
+                    "needs_clarification": int(part.quote_state.eq("needs_clarification").sum()),
+                    "extraction_failed": int(part.quote_state.eq("extraction_failed").sum())
+                })
+
+            st.dataframe(pd.DataFrame(coverage_rows), width="stretch")
+
         elif "cheapest" in q or "lowest" in q:
-            eligible = quotes[(quotes.status=="accepted") & (~quotes.spec_deviation.fillna("").astype(bool))]
-            best = eligible.sort_values("net_inr_per_box").groupby("line_id").first().reset_index()
-            st.dataframe(best[["line_id","vendor_id","net_inr_per_box"]])
-        elif "last year" in q or "savings" in q:
-            totals = quotes[quotes.status=="accepted"].merge(lines[["line_id","qty"]],on="line_id")
-            totals["extended"] = totals.net_inr_per_box*totals.qty
-            st.dataframe(totals.groupby("vendor_id").extended.sum().to_frame("quoted_value_inr"))
+            eligible = award_eligible_quotes(quotes)
+
+            if eligible.empty:
+                st.warning("No quotes passed all award eligibility checks.")
+            else:
+                price_col = "landed_pre_gst_inr_per_box"
+                best = (eligible.sort_values(price_col).drop_duplicates("line_id")[["line_id", "vendor_id", price_col]])
+
+                coverage = award_coverage(eligible, lines)
+                result = coverage.merge(best, on="line_id", how="left")
+
+                st.dataframe(result, width="stretch")
+                st.caption(
+                    "Only quotes passing the strict award eligibility gate "
+                    "are included. Lines without an eligible quote remain blank."
+                )
+
+        elif "last year" in q or "savings" in q or "spend" in q:
+            eligible = award_eligible_quotes(quotes)
+
+            current = eligible[["line_id", "vendor_id", "net_inr_per_box"]].copy()
+
+            comparison = current.merge(
+                last_year[["line_id", "last_year_price_inr_per_box", "vendor"]],
+                on="line_id",
+                how="left",
+                validate="one_to_one"
+            ).merge(
+                lines[["line_id", "qty"]],
+                on="line_id",
+                how="left",
+                validate="one_to_one"
+            )
+
+            comparison["current_extended_inr"] = (comparison.net_inr_per_box * comparison.qty)
+            comparison["last_year_extended_inr"] = (comparison.last_year_price_inr_per_box * comparison.qty)
+            comparison["directional_delta_inr"] = (comparison.last_year_extended_inr - comparison.current_extended_inr)
+            comparison["directional_delta_pct"] = (comparison.directional_delta_inr / comparison.last_year_extended_inr * 100)
+
+            st.dataframe(comparison, width="stretch")
+
+            current_total = comparison.current_extended_inr.sum()
+            previous_total = comparison.last_year_extended_inr.sum()
+            delta = previous_total - current_total
+
+            st.metric("Current quoted value for comparable eligible lines", f"₹{current_total:,.2f}")
+            st.metric("Last-year value for the same quantities and lines", f"₹{previous_total:,.2f}")
+            st.metric(
+                "Directional price difference", f"₹{delta:,.2f}", f"{delta / previous_total * 100:.2f}%"
+                if previous_total else None
+            )
+
+            st.warning(
+                "Directional comparison only. It uses current RFx quantities "
+                "for both periods and assumes comparable GST and freight "
+                "treatment. The last-year file does not document those bases. "
+                "This is not verified savings."
+            )
+
         else:
-            st.info("For this question, inspect the normalized table and evidence. This starter supports coverage, cheapest compliant price and spend comparisons. Connect an OpenAI-compatible model to enable free-form tool selection.")
-    st.caption("Supported deterministic queries are calculated from the normalized data; no demo answers are hardcoded.")
+            st.info(
+                "Supported queries: quote coverage, cheapest compliant price, "
+                "and last-year price comparison."
+            )
+
+    st.caption(
+        "Deterministic analysis calculated from extracted quotes, "
+        "source evidence and configured eligibility checks."
+    )
 with tabs[3]:
     st.subheader("Award scenarios")
 
@@ -201,9 +279,31 @@ with tabs[4]:
             lines.to_excel(
                 writer, index=False, sheet_name="RFx lines"
             )
-            pd.DataFrame(
+            assumptions_df = pd.DataFrame(
                 st.session_state["assumptions"]
-            ).to_excel(
+            )
+
+            model_assumptions = pd.DataFrame([
+                {
+                    "vendor_id": "BUYER",
+                    "assumption": f"USD to INR FX rate: {fx}",
+                    "terms_evidence": f"Buyer-configured FX rate dated {fx_date}",
+                    "terms_confidence": "User-entered"
+                },
+                {
+                    "vendor_id": "BUYER",
+                    "assumption": f"GST assumption: {gst_rate}%",
+                    "terms_evidence": "Buyer-configured GST assumption",
+                    "terms_confidence": "User-entered"
+                }
+            ])
+
+            assumptions_df = pd.concat(
+                [assumptions_df, model_assumptions],
+                ignore_index=True
+            )
+
+            assumptions_df.to_excel(
                 writer, index=False, sheet_name="Assumptions"
             )
             eligible_quotes.to_excel(

@@ -14,7 +14,7 @@ st.caption("Procurement decision workspace · Corrugated packaging · 5 vendors 
 lines = pd.read_csv(ROOT/"data/line_items.csv")
 last_year = pd.read_csv(ROOT/"data/last_year.csv")
 gst_rate = st.sidebar.number_input("GST rate (%)", min_value=0.0, max_value=28.0, value=5.0, step=0.5)
-fx = st.sidebar.number_input("USD → INR", min_value=1.0, value=88.0, step=0.5)
+fx = st.sidebar.number_input("USD → INR", min_value=1.0, value=92.6, step=0.5)
 fx_date = st.sidebar.text_input("FX rate date", value="2026-11-20")
 st.sidebar.caption("Tax and FX are buyer-configurable assumptions. Confirm applicability before award.")
 

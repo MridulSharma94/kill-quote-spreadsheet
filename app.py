@@ -827,107 +827,59 @@ with tabs[4]:
         st.caption(f"Excel export unavailable: {e}")
 
 
+
 with tabs[5]:
     st.subheader("RFQ drafting workspace")
-    st.caption(
-        "Prepare consistent requests for quotation across suppliers. "
-        "Review each draft before sending."
-    )
-
-    st.markdown("#### 1. Procurement requirements")
 
     scope = st.text_area(
-        "Procurement scope",
-        "Supply of corrugated packaging for FMCG distribution.",
-        height=110,
-        help="Describe the products or services being sourced."
+        "Scope",
+        "Supply of corrugated packaging for FMCG distribution."
     )
-
     terms = st.text_area(
-        "Commercial requirements",
-        "Quote per box; state GST, freight, MOQ, payment terms, "
-        "validity and delivery lead time.",
-        height=130,
-        help="Specify the commercial information suppliers must disclose."
+        "Commercial terms",
+        "Please share your best price per box for each item, along with applicable GST, freight, MOQ, payment terms, quote validity and expected delivery lead time."
     )
 
-    st.caption(
-        "These requirements will be included in each supplier's RFQ draft."
-    )
+    vendors = ["V1", "V2", "V3", "V4", "V5"]
 
-    st.divider()
+    st.caption("Add a supplier contact name where known. Otherwise, the email will address the Sales Team.")
 
-    if st.button(
-        "Generate 5 supplier-specific drafts",
-        type="primary",
-        use_container_width=False
-    ):
-        (ROOT / "outbox").mkdir(exist_ok=True)
+    contacts = {}
+    cols = st.columns(5)
 
-        drafts = []
-
-        for vendor in ["V1", "V2", "V3", "V4", "V5"]:
-            subject = "RFQ – Corrugated Packaging"
-
-            body = (
-                f"{scope}\n\n"
-                f"{terms}\n\n"
-                "Please quote all 30 attached line items and "
-                "disclose all deviations."
+    for i, vendor in enumerate(vendors):
+        with cols[i]:
+            contacts[vendor] = st.text_input(
+                f"{vendor} contact",
+                key=f"rfq_contact_{vendor}",
+                placeholder="Contact name"
             )
 
-            draft = (
-                f"Subject: {subject}\n\n"
-                f"{body}"
+    if st.button("Generate vendor RFQ emails"):
+        (ROOT / "outbox").mkdir(exist_ok=True)
+
+        for vendor in vendors:
+            contact = contacts[vendor].strip()
+            greeting = f"Dear {contact}," if contact else "Dear Sales Team,"
+
+            email = (
+                "Subject: RFQ – Corrugated Packaging\n\n"
+                f"{greeting}\n\n"
+                "We invite you to quote for the attached 30 corrugated packaging "
+                "line items required for our FMCG distribution operations.\n\n"
+                f"{terms}\n\n"
+                "Kindly confirm that your quotation meets the specified requirements "
+                "and clearly highlight any deviations or items you are unable to quote.\n\n"
+                "Please also mention any additional charges or assumptions that may "
+                "affect the final price.\n\n"
+                "We look forward to receiving your quotation.\n\n"
+                "Regards,\n"
+                "Procurement Team"
             )
 
             (ROOT / "outbox" / f"{vendor}_RFQ.txt").write_text(
-                draft,
+                email,
                 encoding="utf-8"
             )
 
-            drafts.append({
-                "vendor": vendor,
-                "subject": subject,
-                "body": body,
-                "full_text": draft
-            })
-
-        st.session_state["RFQ_drafts"] = drafts
-
-        st.success(
-            "Five supplier-specific drafts created successfully. "
-            "No email was sent."
-        )
-
-    # Display generated drafts
-    drafts = st.session_state.get("RFQ_drafts", [])
-
-    if drafts:
-        st.divider()
-        st.markdown("#### 2. Review supplier drafts")
-
-        st.caption(
-            "Open each supplier draft to review its subject and message. "
-            "Use the copy control to copy the draft."
-        )
-
-        for draft in drafts:
-            with st.expander(
-                f"Supplier {draft['vendor']} · RFQ draft",
-                expanded=False
-            ):
-                st.markdown("**Email subject**")
-                st.text(draft["subject"])
-
-                st.markdown("**Email body**")
-                st.code(draft["body"], language=None)
-
-                st.caption(
-                    f"Saved to outbox/{draft['vendor']}_RFQ.txt"
-                )
-
-        st.info(
-            "All drafts are saved locally for review. "
-            "No emails are sent automatically."
-        )
+        st.success("Five RFQ drafts generated in outbox/. No email was sent.")

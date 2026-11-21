@@ -1,6 +1,6 @@
 # Phase 6 — Extraction reliability and specification validation
 
-This patch improves extraction where vendor files have stable structure and adds a deterministic RFx-vs-vendor spec check.
+This patch improves extraction where vendor files have stable structure and adds a deterministic RFQ-vs-vendor spec check.
 
 ## What changes
 
@@ -48,7 +48,7 @@ Run Streamlit and click **Run extraction + normalization** again. This is import
 
 After rerun, inspect:
 - V1 should approach 30/30 extracted rows (subject to source table contents).
-- V2 should parse 30/30 explicit price rows. L30's 450x300x12 vs RFx 450x300x120 should be flagged as a dimension mismatch.
+- V2 should parse 30/30 explicit price rows. L30's 450x300x12 vs RFQ 450x300x120 should be flagged as a dimension mismatch.
 - V4 should improve beyond the prior 16/30; the source image visibly contains L01–L27. If any remain missing, inspect the crop evidence and do not invent prices.
 - V5 should retain 7-ply last-year references, hold die-cut/printed applicability lines for clarification, and preserve unknown freight as a blocker.
 

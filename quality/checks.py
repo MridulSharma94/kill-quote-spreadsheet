@@ -98,7 +98,7 @@ def award_eligible_quotes(quotes: pd.DataFrame, eligible_vendors=None) -> pd.Dat
 
 
 def award_coverage(eligible: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
-    """Show which RFx lines have at least one award-eligible quote."""
+    """Show which RFQ lines have at least one award-eligible quote."""
     counts = eligible.groupby("line_id").vendor_id.nunique() if not eligible.empty else pd.Series(dtype=int)
     out = lines[["line_id", "item_name", "qty"]].copy()
     out["eligible_vendor_count"] = out.line_id.map(counts).fillna(0).astype(int)

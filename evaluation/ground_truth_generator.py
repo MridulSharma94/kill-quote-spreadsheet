@@ -4,7 +4,7 @@ Day 1, H1-2: build the canonical dataset + hidden ground truth.
 Run from the project folder:   python data_gen/ground_truth.py
 
 Creates:
-  data/line_items.csv              -> the 30 lines in YOUR RFx (the AI may see this)
+  data/line_items.csv              -> the 30 lines in YOUR RFQ (the AI may see this)
   data/last_year.csv               -> what the buyer paid last year (the AI may see this)
   ground_truth/vendors.csv         -> true terms of each vendor (HIDDEN from the AI)
   ground_truth/ground_truth_prices.csv -> true price per vendor per line (HIDDEN)

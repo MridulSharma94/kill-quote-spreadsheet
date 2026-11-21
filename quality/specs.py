@@ -1,4 +1,4 @@
-"""Deterministic comparison of disclosed vendor specs with RFx requirements."""
+"""Deterministic comparison of disclosed vendor specs with RFQ requirements."""
 from __future__ import annotations
 import re
 import pandas as pd
@@ -47,20 +47,20 @@ def validate_quote_specs(normalized: pd.DataFrame, raw: pd.DataFrame,
             else:
                 observed = tuple(int(x) for x in tokens)
                 if observed != expected["dimensions"]:
-                    mismatches.append(f"Dimensions {observed} differ from RFx {expected['dimensions']}")
+                    mismatches.append(f"Dimensions {observed} differ from RFQ {expected['dimensions']}")
         else:
             missing.append("dimensions")
         ply = _PLY.search(snippet)
         if ply:
             if int(ply.group(1)) != expected["ply"]:
-                mismatches.append(f"{ply.group(1)}-ply offered; RFx requires {expected['ply']}-ply")
+                mismatches.append(f"{ply.group(1)}-ply offered; RFQ requires {expected['ply']}-ply")
         else:
             missing.append("ply")
         bf = _BF.search(snippet)
         if expected["bf"] is not None:
             if bf:
                 if int(bf.group(1)) != expected["bf"]:
-                    mismatches.append(f"BF {bf.group(1)} offered; RFx requires BF {expected['bf']}")
+                    mismatches.append(f"BF {bf.group(1)} offered; RFQ requires BF {expected['bf']}")
             else:
                 missing.append("burst factor")
         if existing_dev:

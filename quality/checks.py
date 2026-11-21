@@ -41,7 +41,15 @@ def build_review_register(normalized: pd.DataFrame, raw: pd.DataFrame,
 
     for idx, row in result.iterrows():
         blockers = []
-        if not bool(row.get("quoted", False)):
+        state = str(row.get("quote_state", "quoted" if bool(row.get("quoted", False)) else "extraction_failed"))
+        deviation = row.get("spec_deviation", "")
+        if state == "extraction_failed":
+            blockers.append("Extraction failed or no price was recovered — inspect original source; not a supplier no-bid")
+        elif state == "needs_clarification":
+            blockers.append("Supplier clarification required")
+        elif state == "supplier_no_quote":
+            blockers.append("Supplier source indicates no quote for this line")
+        elif not bool(row.get("quoted", False)):
             blockers.append("No extracted quote — verify original source before classifying as supplier no-bid")
         if str(row.get("status", "")) == "needs_review":
             existing = row.get("reasons", "")
@@ -49,7 +57,7 @@ def build_review_register(normalized: pd.DataFrame, raw: pd.DataFrame,
             elif pd.notna(existing) and str(existing).strip(): blockers.append(str(existing))
         if str(row.get("freight_treatment", "")) == "extra_unknown":
             blockers.append("Freight amount unknown")
-        if not str(row.get("spec_deviation", "") or "").strip() == "":
+        if pd.notna(deviation) and str(deviation).strip():
             blockers.append("Specification deviation unresolved")
         if not bool(row.get("evidence_present", False)) and bool(row.get("quoted", False)):
             blockers.append("Source evidence missing")
@@ -80,6 +88,10 @@ def award_eligible_quotes(quotes: pd.DataFrame, eligible_vendors=None) -> pd.Dat
         mask &= ~q.freight_treatment.astype(str).eq("extra_unknown")
     if "spec_deviation" in q.columns:
         mask &= q.spec_deviation.fillna("").astype(str).str.strip().eq("")
+    if "spec_validation" in q.columns:
+        mask &= q.spec_validation.astype(str).eq("verified")
+    if "quote_state" in q.columns:
+        mask &= q.quote_state.astype(str).eq("quoted")
     if "confidence" in q.columns:
         mask &= pd.to_numeric(q.confidence, errors="coerce").fillna(0).ge(0.90)
     return q.loc[mask].copy()

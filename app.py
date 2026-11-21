@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from extract.integration import run_full_pipeline
+from quality.checks import award_eligible_quotes, award_coverage, build_review_register
 
 ROOT = Path(__file__).parent
 st.set_page_config(page_title="Kill the Quote Spreadsheet", layout="wide")
@@ -19,44 +20,21 @@ st.sidebar.caption("Tax and FX are buyer-configurable assumptions. Confirm appli
 
 
 def build_award(quotes, lines, eligible_vendors):
-    required = {
-        "vendor_id", "line_id", "status", "quoted",
-        "net_inr_per_box", "spec_deviation"
-    }
-    missing = required - set(quotes.columns)
-    if missing:
-        raise ValueError(f"Missing award columns: {sorted(missing)}")
-
-    eligible = quotes[
-        quotes["vendor_id"].isin(eligible_vendors)
-        & quotes["status"].eq("accepted")
-        & quotes["quoted"].eq(True)
-        & quotes["net_inr_per_box"].notna()
-        & quotes["spec_deviation"].fillna("").astype(str).str.strip().eq("")
-    ].copy()
-
-    if "freight_treatment" in eligible.columns:
-        eligible = eligible[
-            ~eligible["freight_treatment"].isin(
-                ["extra_unknown", "unknown"]
-            )
-        ]
-
-    price_col = "net_inr_per_box"
-    if "landed_pre_gst_inr_per_box" in eligible.columns:
-        eligible["landed_pre_gst_inr_per_box"] = pd.to_numeric(
-            eligible["landed_pre_gst_inr_per_box"], errors="coerce"
-        )
-        eligible = eligible[
-            eligible["landed_pre_gst_inr_per_box"].notna()
-        ]
-        price_col = "landed_pre_gst_inr_per_box"
+    eligible = award_eligible_quotes(quotes, eligible_vendors)
 
     if eligible.empty:
         return pd.DataFrame()
 
-    eligible = eligible.sort_values(price_col)
-    winners = eligible.drop_duplicates(subset=["line_id"], keep="first")
+    price_col = "landed_pre_gst_inr_per_box"
+    eligible[price_col] = pd.to_numeric(
+        eligible[price_col], errors="coerce"
+    )
+    eligible = eligible.dropna(subset=[price_col])
+
+    winners = (
+        eligible.sort_values(price_col)
+        .drop_duplicates(subset=["line_id"], keep="first")
+    )
 
     award = winners.merge(
         lines[["line_id", "qty"]],
@@ -81,6 +59,7 @@ if st.button("Run extraction + normalization", type="primary"):
         (ROOT/"data/assumptions.json").write_text(json.dumps(assumptions, indent=2))
         (ROOT/"data/evidence.json").write_text(json.dumps(evidence, indent=2))
         st.session_state["quotes"] = df
+        st.session_state["raw"] = raw
         st.session_state["assumptions"] = assumptions
         st.session_state["evidence"] = evidence
 
@@ -89,6 +68,11 @@ if "quotes" not in st.session_state:
         st.session_state["quotes"] = pd.read_csv(ROOT/"data/normalized_quotes.csv")
         st.session_state["assumptions"] = json.loads((ROOT/"data/assumptions.json").read_text()) if (ROOT/"data/assumptions.json").exists() else []
         st.session_state["evidence"] = json.loads((ROOT/"data/evidence.json").read_text()) if (ROOT/"data/evidence.json").exists() else []
+        raw_path = ROOT / "data/raw_extractions.csv"
+        st.session_state["raw"] = (
+            pd.read_csv(raw_path) if raw_path.exists()
+            else pd.DataFrame()
+        )
     else:
         st.info("Run extraction to create the comparison. Add or replace files in vendor_files/ first.")
         st.stop()
@@ -106,20 +90,27 @@ with tabs[0]:
     st.write({k: row[k] for k in ["line_id","vendor_id","status","net_inr_per_box","confidence","source_file","source_snippet","assumptions"] if k in row.index})
 with tabs[1]:
     st.subheader("Human review queue")
-    review = quotes[quotes.status.eq("needs_review")]
-    st.metric("Cells requiring review", len(review))
-    for idx, r in review.iterrows():
-        with st.expander(f'{r.vendor_id} · {r.line_id} · confidence {r.confidence}'):
-            st.write(r.get("source_snippet",""))
-            edited = st.number_input("Confirmed INR / box (ex-GST, ex-freight)", min_value=0.0, value=float(r.net_inr_per_box or 0), key=f"edit_{idx}")
-            if st.button("Save reviewed price", key=f"confirm_{idx}"):
-                quotes.loc[idx,"net_inr_per_box"] = edited
-                quotes.loc[idx,"status"] = "accepted"
-                st.session_state["quotes"] = quotes
-                quotes.to_csv(ROOT/"data/normalized_quotes.csv", index=False)
-                st.rerun()
+
+    raw = st.session_state.get("raw", pd.DataFrame())
+    review_register = build_review_register(quotes, raw, lines)
+
+    review_items = review_register[review_register["review_blockers"].fillna("").str.strip().ne("")]
+
+    st.metric("Cells requiring review or source verification", len(review_items))
+
+    st.dataframe(
+        review_items[
+            [
+                "vendor_id", "line_id", "quote_state", "status",
+                "spec_validation", "review_blockers", "source_file",
+                "source_snippet"
+            ]
+        ],
+        width="stretch"
+    )
+
     st.subheader("Assumptions ledger")
-    st.dataframe(pd.DataFrame(st.session_state["assumptions"]), width='stretch')
+    st.dataframe(pd.DataFrame(st.session_state["assumptions"]), width="stretch")
 with tabs[2]:
     st.subheader("Analyst")
     question = st.text_input("Ask about the comparison", placeholder="Which vendor is cheapest on a spec-compliant basis?")
@@ -141,15 +132,52 @@ with tabs[2]:
     st.caption("Supported deterministic queries are calculated from the normalized data; no demo answers are hardcoded.")
 with tabs[3]:
     st.subheader("Award scenarios")
+
     min_quality = st.slider("Minimum quality score", 0, 100, 80)
-    quality = {"V1":90,"V2":82,"V3":95,"V4":78,"V5":92}
-    eligible_vendors = [v for v,s in quality.items() if s>=min_quality]
+    quality = {"V1": 90, "V2": 82, "V3": 95, "V4": 78, "V5": 92}
+    eligible_vendors = [
+        vendor for vendor, score in quality.items()
+        if score >= min_quality
+    ]
+
+    eligible_quotes = award_eligible_quotes(quotes, eligible_vendors)
+    coverage = award_coverage(eligible_quotes, lines)
     award = build_award(quotes, lines, eligible_vendors)
-    st.write("Eligible vendors:", ", ".join(eligible_vendors) if eligible_vendors else "None")
-    st.dataframe(award, width='stretch')
+
+    st.write(
+        "Eligible vendors:",
+        ", ".join(eligible_vendors) if eligible_vendors else "None"
+    )
+
+    st.subheader("Award-eligible quotes")
+    st.dataframe(eligible_quotes, width="stretch")
+
+    st.subheader("Line-level award coverage")
+    st.dataframe(coverage, width="stretch")
+
+    st.metric(
+        "RFx lines with at least one eligible quote",
+        f"{int(coverage['awardable'].sum())} / {len(coverage)}"
+    )
+
+    st.subheader("Indicative award")
+    st.dataframe(award, width="stretch")
+
     if not award.empty:
-        st.metric("Indicative award value (pre-GST, incl. stated freight)", f"₹{award.extended_value.sum()/1e7:,.2f} crore")
-    st.caption("Quality scores are illustrative demo inputs, not supplied questionnaire evidence. Replace them with verified responses before a real award.")
+        st.metric(
+            "Indicative award value (pre-GST, including stated freight)",
+            f"₹{award.extended_value.sum()/1e7:,.2f} crore"
+        )
+    else:
+        st.warning(
+            "No quotes passed all award eligibility checks. "
+            "Resolve evidence, specification, confidence and commercial blockers."
+        )
+
+    st.caption(
+        "Quality scores are illustrative demo inputs, not verified supplier "
+        "questionnaire evidence. This is an eligibility gate, not an award recommendation."
+    )
 with tabs[4]:
     st.subheader("Pre-award trust checks")
     coverage = quotes[quotes.quoted].groupby("vendor_id").line_id.nunique()
@@ -159,13 +187,44 @@ with tabs[4]:
     st.warning("Do not finalize an award while review cells, specification deviations, tax classification or freight terms remain unresolved.")
     st.download_button("Export normalized quotes (CSV)", quotes.to_csv(index=False), "normalized_quotes.csv", "text/csv")
     try:
-        with pd.ExcelWriter(ROOT/"data/award_export.xlsx", engine="openpyxl") as w:
-            quotes.to_excel(w,index=False,sheet_name="Normalized quotes")
-            lines.to_excel(w,index=False,sheet_name="RFx lines")
-            pd.DataFrame(st.session_state["assumptions"]).to_excel(w,index=False,sheet_name="Assumptions")
-        st.download_button("Export workbook (XLSX)", (ROOT/"data/award_export.xlsx").read_bytes(), "award_comparison.xlsx")
+        raw = st.session_state.get("raw", pd.DataFrame())
+        review_register = build_review_register(quotes, raw, lines)
+        eligible_quotes = award_eligible_quotes(quotes)
+        coverage = award_coverage(eligible_quotes, lines)
+
+        export_path = ROOT / "data/award_export.xlsx"
+
+        with pd.ExcelWriter(export_path, engine="openpyxl") as writer:
+            quotes.to_excel(
+                writer, index=False, sheet_name="Normalized quotes"
+            )
+            lines.to_excel(
+                writer, index=False, sheet_name="RFx lines"
+            )
+            pd.DataFrame(
+                st.session_state["assumptions"]
+            ).to_excel(
+                writer, index=False, sheet_name="Assumptions"
+            )
+            eligible_quotes.to_excel(
+                writer, index=False, sheet_name="Award eligible quotes"
+            )
+            coverage.to_excel(
+                writer, index=False, sheet_name="Award coverage"
+            )
+            review_register.to_excel(
+                writer, index=False, sheet_name="Review register"
+            )
+
+        st.download_button(
+            "Export workbook (XLSX)",
+            export_path.read_bytes(),
+            "award_comparison.xlsx"
+        )
+
     except Exception as e:
         st.caption(f"Excel export unavailable: {e}")
+
 with tabs[5]:
     st.subheader("RFx co-pilot")
     scope = st.text_area("Scope", "Supply of corrugated packaging for FMCG distribution.")

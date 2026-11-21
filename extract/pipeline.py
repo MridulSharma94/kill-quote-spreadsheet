@@ -1,12 +1,12 @@
 """LLM extraction adapters. No ground-truth imports are permitted here."""
 from __future__ import annotations
-from dotenv import load_dotenv
-load_dotenv()
 import os, json, re, base64
 from pathlib import Path
 import pandas as pd
 from openai import OpenAI
-from extract.structured import parse_v1_xlsx, parse_v2_pdf_text, parse_v5_email
+from dotenv import load_dotenv
+load_dotenv()
+from extract.structured import (parse_v1_xlsx, parse_v2_pdf_text, parse_v3_docx, parse_v3_terms, parse_v4_image_ocr, parse_v4_terms, parse_v5_email, parse_v5_terms)
 
 VENDOR_FILES = {
  "V1":"Shree_Ganesh_V1.xlsx",
@@ -86,79 +86,38 @@ Supplemental vendor terms:
     else:
         messages=[{"role":"user","content":prompt}]
         selected=model
-    
-    # Vision requests have a tighter output budget. Text extraction can return
-    # all 30 line items, so give it a larger budget.
-    output_limit = 600 if path.suffix.lower() in (".jpg", ".jpeg", ".png") else 1800
-
     client = _client()
-    request = {
-        "model": selected,
-        "messages": messages,
-        "temperature": 0,
-        "max_tokens": output_limit,
-    }
-
+    output_limit = 600 if path.suffix.lower() in (".jpg", ".jpeg", ".png") else 1800
     try:
         response = client.chat.completions.create(
-            **request,
+            model=selected, messages=messages,
             response_format={"type": "json_object"},
+            temperature=0, max_tokens=output_limit,
         )
     except Exception as exc:
-        error_text = str(exc).lower()
-
-        # Retry without provider-enforced JSON mode only when the provider
-        # rejects JSON validation/structured output.
-        json_mode_error = (
-            "failed to validate json" in error_text
-            or "failed_generation" in error_text
-            or "response_format" in error_text
-        )
-
-        if not json_mode_error:
+        message = str(exc).lower()
+        # Some OpenAI-compatible providers reject JSON mode for selected models.
+        if not any(token in message for token in ("failed to validate json", "failed_generation", "response_format")):
             raise
-
         fallback_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Return exactly one valid JSON object. "
-                    "Do not use Markdown fences or add commentary. "
-                    "Use the requested keys and data types. "
-                    "Represent unknown numeric values as null."
-                ),
-            },
+            {"role": "system", "content": "Return only one valid JSON object. Do not use markdown fences or commentary."},
             *messages,
         ]
-
         response = client.chat.completions.create(
-            **{**request, "messages": fallback_messages}
+            model=selected, messages=fallback_messages,
+            temperature=0, max_tokens=output_limit,
         )
-
     raw = response.choices[0].message.content or ""
-
-    # Some models wrap JSON in Markdown fences despite the instructions.
     raw = raw.strip()
     if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1]
-        if raw.endswith("```"):
-            raw = raw[:-3].strip()
-
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I).strip()
     try:
-        result = json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"{vendor_id}: model returned invalid JSON. "
-            f"Error: {exc}. Response excerpt: {raw[:500]}"
-        ) from exc
-
-    if not isinstance(result, dict):
-        raise ValueError(f"{vendor_id}: extraction response was not a JSON object.")
-
-    if not isinstance(result.get("quotes", []), list):
-        raise ValueError(f"{vendor_id}: JSON field 'quotes' must be an array.")
-
-    return result
+        raise ValueError(f"{vendor_id}: model returned invalid JSON: {exc}; response={raw[:500]}")
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("quotes", []), list):
+        raise ValueError(f"{vendor_id}: model response must be an object with a quotes array")
+    return parsed
 
 def _call_image_in_chunks(vendor_id, path, lines, last_year, model):
     """Run vision extraction over overlapping, enhanced horizontal crops.
@@ -170,14 +129,8 @@ def _call_image_in_chunks(vendor_id, path, lines, last_year, model):
     import tempfile
     image = Image.open(path).convert("RGB")
     width, height = image.size
-    spans = [
-    (int(height * 0.00), int(height * 0.20)),
-    (int(height * 0.16), int(height * 0.36)),
-    (int(height * 0.32), int(height * 0.52)),
-    (int(height * 0.48), int(height * 0.68)),
-    (int(height * 0.64), int(height * 0.84)),
-    (int(height * 0.80), height),
-    ]
+    spans = [(0, int(height * .43)), (int(height * .36), int(height * .76)),
+             (int(height * .69), height)]
     merged = {}
     terms = {}
     for start, end in spans:
@@ -213,10 +166,23 @@ def extract_vendor_files(lines,last_year,vendor_dir,fx,gst):
             assumptions.append({"vendor_id":vid,"assumption":f"Missing source file: {filename}"})
             continue
         text=_read_text(path)
-        if path.suffix.lower() in (".jpg", ".jpeg", ".png"):
-            result=_call_image_in_chunks(vid,path,lines,last_year,model)
+        # Prefer deterministic extraction for stable source layouts. Vision/LLM
+        # remains a fallback only where a deterministic parser cannot be used.
+        if vid == "V3":
+            model_quotes = parse_v3_docx(path)
+            result = {"commercial_terms": parse_v3_terms(path), "quotes": model_quotes}
+        elif vid == "V4":
+            try:
+                model_quotes = parse_v4_image_ocr(path)
+                result = {"commercial_terms": parse_v4_terms(vendor_dir/TERMS_FILES[vid]), "quotes": model_quotes}
+            except Exception as ocr_error:
+                result = _call_image_in_chunks(vid,path,lines,last_year,model)
+                result["commercial_terms"] = parse_v4_terms(vendor_dir/TERMS_FILES[vid])
+                assumptions.append({"vendor_id":vid,"assumption":f"V4 OCR fallback used: {ocr_error}"})
+        elif vid == "V5":
+            result = {"commercial_terms": parse_v5_terms(text), "quotes": []}
         else:
-            result=_call_model(vid,path,lines,last_year,text,model)
+            result = _call_model(vid,path,lines,last_year,text,model)
         t=result.get("commercial_terms",{})
         terms_by_vendor[vid]=t
         assumptions.append({"vendor_id":vid,"assumption":"Commercial terms extracted from source; verify terms_evidence before award.",
@@ -229,6 +195,12 @@ def extract_vendor_files(lines,last_year,vendor_dir,fx,gst):
             parsed = parse_v2_pdf_text(text)
             if parsed:
                 model_quotes = parsed
+        elif vid == "V3":
+            model_quotes = parse_v3_docx(path)
+        elif vid == "V4":
+            # The deterministic OCR result is already in model_quotes when available.
+            if not model_quotes:
+                model_quotes = parse_v4_image_ocr(path)
         elif vid == "V5":
             parsed, held_by_vendor[vid] = parse_v5_email(text, lines, last_year)
             model_quotes = parsed
@@ -255,13 +227,24 @@ def extract_vendor_files(lines,last_year,vendor_dir,fx,gst):
     df=pd.DataFrame(all_quotes)
     columns=["vendor_id","line_id","quoted","quoted_price_as_stated","quoted_unit","currency","confidence","source_file","source_snippet","spec_deviation","assumptions","extraction_note"]
     if df.empty: df=pd.DataFrame(columns=columns)
+    if "quote_state" not in df.columns:
+        df["quote_state"] = "quoted"
     for vid in VENDOR_FILES:
         existing=set(df.loc[df.vendor_id.eq(vid),"line_id"].astype(str)) if not df.empty else set()
         for lid in lines.line_id.astype(str):
             if lid in existing: continue
             note=held_by_vendor.get(vid,{}).get(lid, "")
+            if note:
+                quote_state = "needs_clarification"
+            elif vid == "V4" and int(lid[1:]) > 27:
+                quote_state = "supplier_no_quote"
+                note = "Vendor terms addendum states the rate card contains 27 quoted lines; this line is unlisted."
+            else:
+                quote_state = "extraction_failed"
+                note = "No price extracted from source; verify original source. This is not a supplier no-bid."
             df.loc[len(df)]={"vendor_id":vid,"line_id":lid,"quoted":False,"quoted_price_as_stated":None,
                 "quoted_unit":None,"currency":None,"confidence":0,"source_file":VENDOR_FILES[vid],
                 "source_snippet":"","spec_deviation":"","assumptions":"",
-                "extraction_note":note or "No extracted quote; inspect original source before classifying as supplier no-bid."}
+                "extraction_note":note,"quote_state":quote_state}
+    df.loc[df["quoted"].fillna(False).astype(bool), "quote_state"] = "quoted"
     return df,terms_by_vendor,assumptions,evidence

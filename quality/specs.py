@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 import pandas as pd
 
-_DIM = re.compile(r"(?<!\d)(\d{2,4})\s*[x×X]\s*(\d{2,4})\s*[x×X]\s*(\d{1,4})(?!\d)")
+_DIM = re.compile(r"(?<![A-Za-z0-9])([A-Za-z0-9]{2,4})\s*[x×X]\s*([A-Za-z0-9]{2,4})\s*[x×X]\s*([A-Za-z0-9]{1,4})(?![A-Za-z0-9])")
+_NUMERIC = re.compile(r"^\d{1,4}$")
 _PLY = re.compile(r"\b(3|5|7)\s*[- ]?ply\b", re.I)
 _BF = re.compile(r"\bBF\s*[-:]?\s*(\d{1,2})\b", re.I)
 
@@ -38,9 +39,15 @@ def validate_quote_specs(normalized: pd.DataFrame, raw: pd.DataFrame,
         mismatches, missing = [], []
         dims = _DIM.search(snippet)
         if dims:
-            observed = tuple(int(x) for x in dims.groups())
-            if observed != expected["dimensions"]:
-                mismatches.append(f"Dimensions {observed} differ from RFx {expected['dimensions']}")
+            tokens = dims.groups()
+            # OCR-confusable letters (e.g. "g00x600x600") are not numeric
+            # evidence. Never turn a likely OCR substitution into a supplier mismatch.
+            if not all(_NUMERIC.fullmatch(token) for token in tokens):
+                missing.append("dimensions (OCR-ambiguous; verify source image)")
+            else:
+                observed = tuple(int(x) for x in tokens)
+                if observed != expected["dimensions"]:
+                    mismatches.append(f"Dimensions {observed} differ from RFx {expected['dimensions']}")
         else:
             missing.append("dimensions")
         ply = _PLY.search(snippet)

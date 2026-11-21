@@ -79,6 +79,10 @@ def run_full_pipeline(lines,last_year,vendor_dir,fx_inr_per_usd=88.0):
               for _,r in raw.iterrows()}
     normalized["extraction_note"]=[note_map.get((str(v),str(l)), "")
                                    for v,l in zip(normalized.vendor_id,normalized.line_id)]
+    state_map={(str(r.vendor_id),str(r.line_id)):str(getattr(r,"quote_state","quoted"))
+               for r in raw.itertuples(index=False)}
+    normalized["quote_state"]=[state_map.get((str(v),str(l)), "extraction_failed")
+                               for v,l in zip(normalized.vendor_id,normalized.line_id)]
     for idx,row in normalized.iterrows():
         note=str(row.get("extraction_note", "") or "")
         if note and not bool(row.get("quoted", False)) and "No extracted quote" not in note:
